@@ -15,8 +15,11 @@ import (
 
 	"net/http"
 
+	kitlog "github.com/go-kit/kit/log"
+
 	kitHttp "github.com/go-kit/kit/transport/http"
 	"github.com/gorilla/mux"
+	"golang.org/x/time/rate"
 )
 
 func main() {
@@ -30,12 +33,25 @@ func main() {
 		log.Fatal("请指定端口")
 	}
 	utils.SetServiceNameAndPort(*name, *port)
-
+	var logger kitlog.Logger
+	{
+		logger = kitlog.NewLogfmtLogger(os.Stdout)
+		logger = kitlog.WithPrefix(logger, "mykit", "1.0")
+		logger = kitlog.WithPrefix(logger, "time", kitlog.DefaultTimestampUTC)
+		logger = kitlog.WithPrefix(logger, "caller", kitlog.DefaultCaller)
+	}
 	user := services.UserService{}
-	endp := endpoints.GenUserEnPoint(user)
+	limit := rate.NewLimiter(1, 5)
+	endp := endpoints.RateLimit(limit)(endpoints.UserServiceLogMiddleware(logger)(endpoints.GenUserEnPoint(user)))
 
-	handler := kitHttp.NewServer(endp, transport.DecodeUserRequest, transport.EncodeUserResponse) //使用go kit创建server传入我们之前定义的两个解析函数
-	r := mux.NewRouter()                                                                          //使用mux来使服务支持路由
+	options := []kitHttp.ServerOption{
+		kitHttp.ServerErrorEncoder(utils.MyErrorEncoder),
+		//ServerErrorEncoder支持ErrorEncoder类型的参数 type ErrorEncoder func(ctx context.Context, err error, w http.ResponseWriter)
+		//我们自定义的MyErrorEncoder只要符合ErrorEncoder类型就可以传入
+	} //创建ServerOption切片
+
+	handler := kitHttp.NewServer(endp, transport.DecodeUserRequest, transport.EncodeUserResponse, options...) //使用go kit创建server传入我们之前定义的两个解析函数
+	r := mux.NewRouter()                                                                                      //使用mux来使服务支持路由
 	//r.Handle(`/user/{uid:\d+}`, serverHandler) //这种写法支持多种请求方法，访问Examp: http://localhost:8080/user/121便可以访问
 	r.Methods("GET").Path(`/user/{uid:\d+}`).Handler(handler) //这种写法限定了请求只支持GET方法
 	r.Methods("GET").Path("/health").HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
